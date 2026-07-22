@@ -71,25 +71,30 @@ DecodedPacket MeshCorePacketDecoder::decode(const std::string& hexData,
             offset += 4;
         }
 
-        // Parse path
+        // Parse path. The path_len byte encodes both fields (Packet.h upstream):
+        // bits 0-5 = hash count, bits 6-7 = hash size - 1 (newer meshes use
+        // 2-byte path hashes; 1-byte hashes keep the legacy byte==count form)
         if (bytes.size() < offset + 1) {
             throw std::runtime_error("Packet too short for path length");
         }
-        packet.pathLength = bytes[offset];
+        uint8_t pathLenByte = bytes[offset];
+        uint8_t pathHashSize = (pathLenByte >> 6) + 1;
+        packet.pathLength = pathLenByte & 63;
         offset += 1;
 
-        if (bytes.size() < offset + packet.pathLength) {
+        size_t pathBytes = static_cast<size_t>(packet.pathLength) * pathHashSize;
+        if (bytes.size() < offset + pathBytes) {
             throw std::runtime_error("Packet too short for path data");
         }
 
         if (packet.pathLength > 0) {
             std::vector<std::string> pathVec;
             for (uint8_t i = 0; i < packet.pathLength; i++) {
-                pathVec.push_back(byteToHex(bytes[offset + i]));
+                pathVec.push_back(bytesToHex(bytes.data() + offset + i * pathHashSize, pathHashSize));
             }
             packet.path = pathVec;
         }
-        offset += packet.pathLength;
+        offset += pathBytes;
 
         // Extract payload
         const uint8_t* payloadBytes = bytes.data() + offset;
@@ -183,8 +188,8 @@ DecodedPacket MeshCorePacketDecoder::decodeWithVerification(const std::string& h
                 routeTypeVal == static_cast<uint8_t>(RouteType::TransportDirect)) {
                 offset += 4;
             }
-            uint8_t pathLen = bytes[offset];
-            offset += 1 + pathLen;
+            uint8_t pathLenByte = bytes[offset];
+            offset += 1 + static_cast<size_t>(pathLenByte & 63) * ((pathLenByte >> 6) + 1);
 
             const uint8_t* payloadBytes = bytes.data() + offset;
             size_t payloadLen = bytes.size() - offset;
@@ -272,19 +277,23 @@ PacketStructure MeshCorePacketDecoder::analyzeStructure(const std::string& hexDa
             offset += 4;
         }
 
-        // Path length
-        uint8_t pathLength = bytes[offset];
-        std::string pathLenDesc = std::to_string(pathLength) + " bytes";
+        // Path length (bits 0-5 = hash count, bits 6-7 = hash size - 1)
+        uint8_t pathLenByte = bytes[offset];
+        uint8_t pathHashSize = (pathLenByte >> 6) + 1;
+        uint8_t pathHashCount = pathLenByte & 63;
+        uint8_t pathLength = pathHashCount * pathHashSize; // total path bytes
+        std::string pathLenDesc = std::to_string(pathHashCount) + " hops x " +
+                                  std::to_string(pathHashSize) + "-byte hashes";
         if (routeTypeVal == static_cast<uint8_t>(RouteType::Direct) ||
             routeTypeVal == static_cast<uint8_t>(RouteType::TransportDirect)) {
-            pathLenDesc = std::to_string(pathLength) + " bytes of routing instructions";
+            pathLenDesc += " of routing instructions";
         } else if (routeTypeVal == static_cast<uint8_t>(RouteType::Flood) ||
                    routeTypeVal == static_cast<uint8_t>(RouteType::TransportFlood)) {
-            pathLenDesc = std::to_string(pathLength) + " bytes showing route taken";
+            pathLenDesc += " showing route taken";
         }
         structure.segments.push_back({"Path Length", pathLenDesc,
                                      static_cast<int>(offset), static_cast<int>(offset),
-                                     "0x" + byteToHex(pathLength)});
+                                     "0x" + byteToHex(pathLenByte)});
         offset += 1;
 
         // Path data
@@ -446,8 +455,8 @@ std::string MeshCorePacketDecoder::calculateMessageHash(const uint8_t* bytes, si
         }
 
         if (len > offset) {
-            uint8_t pathLen = bytes[offset];
-            offset += 1 + pathLen;
+            uint8_t pathLenByte = bytes[offset];
+            offset += 1 + static_cast<size_t>(pathLenByte & 63) * ((pathLenByte >> 6) + 1);
         }
 
         if (len >= offset + 4) {
