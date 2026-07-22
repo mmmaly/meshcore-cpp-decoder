@@ -86,6 +86,33 @@ make -j$(sysctl -n hw.ncpu)
 ./meshcore-decoder decode <hex> -s
 ```
 
+### Stream mode: decode packets from stdin
+
+A persistent filter for piping a LoRa receiver's output straight in — one process for the whole session instead of one per packet:
+
+```bash
+lora_rx -C 869432000,869618000 -S 7,8 | ./meshcore-decoder stream -K keys.txt
+```
+
+Stream mode decodes `rx ok: <hex>`, `rx hex: <hex>` and bare-hex lines from stdin (one packet per line); every other line passes through unchanged, so receiver context (channel, SNR, CRC status) stays interleaved with the decoded packets. Options:
+
+| Option | Description |
+|---|---|
+| `-K, --key-file <f>` | Read channel keys from a file (one hex key per line, `#` comments) — keeps keys out of `ps` |
+| `-k, --key <key>` | Channel key on the command line (repeatable) |
+| `-j, --json` | One compact JSON object per packet (JSONL) |
+| `-a, --rx-msg` | Also decode legacy `rx msg: 0x11, 0x04, ...` lines (replaying old logs) |
+| `-q, --quiet` | Don't pass non-packet lines through |
+| `-s, --structure` | Include packet structure |
+
+Replay an old log:
+
+```bash
+cat pakety.txt | ./meshcore-decoder stream --rx-msg -K keys.txt
+```
+
+`-K` also works with the `decode` command.
+
 ### Derive Ed25519 public key
 
 ```bash
