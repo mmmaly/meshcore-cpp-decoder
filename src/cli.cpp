@@ -4,9 +4,11 @@
 
 #include "meshcore/meshcore.h"
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <nlohmann/json.hpp>
 
@@ -36,6 +38,55 @@ static std::string cleanHex(const std::string& hex) {
         clean = clean.substr(2);
     }
     return clean;
+}
+
+static std::string trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+// Load channel keys from a file: one hex key per line, blank lines and
+// '#' comments ignored. Keeps keys off the command line (and out of `ps`).
+static bool loadKeyFile(const std::string& path, std::vector<std::string>& keys) {
+    std::ifstream f(path);
+    if (!f) {
+        std::cerr << color::red << "Error: cannot open key file: " << path
+                  << color::reset << "\n";
+        return false;
+    }
+    std::string line;
+    while (std::getline(f, line)) {
+        std::string k = trim(line);
+        if (k.empty() || k[0] == '#') continue;
+        keys.push_back(k);
+    }
+    return true;
+}
+
+// Extract packet hex from a lora_rx "rx msg: 0x11, 0x04, ..." line
+static std::string hexFromRxMsg(const std::string& line) {
+    std::string hex;
+    for (size_t i = 0; i + 1 < line.size(); i++) {
+        if (line[i] == '0' && (line[i + 1] == 'x' || line[i + 1] == 'X')) {
+            size_t j = i + 2;
+            std::string tok;
+            while (j < line.size() && std::isxdigit(static_cast<unsigned char>(line[j])))
+                tok += line[j++];
+            if (tok.size() == 1) hex += "0" + tok;
+            else if (tok.size() == 2) hex += tok;
+            i = j - 1;
+        }
+    }
+    return hex;
+}
+
+static bool isBareHex(const std::string& s) {
+    if (s.size() < 4 || s.size() % 2 != 0) return false;
+    for (char c : s)
+        if (!std::isxdigit(static_cast<unsigned char>(c))) return false;
+    return true;
 }
 
 static json payloadToJson(const DecodedPacket& packet) {
@@ -239,24 +290,15 @@ static void showPayloadDetails(const PayloadData& payload) {
     }, payload);
 }
 
-static int cmdDecode(const std::string& hex, const std::vector<std::string>& keys,
-                     bool jsonOutput, bool showStructure) {
-    std::string cleanedHex = cleanHex(hex);
-
-    MeshCoreKeyStore keyStore;
-    if (!keys.empty()) {
-        keyStore.addChannelSecrets(keys);
-    }
-
-    auto packet = MeshCorePacketDecoder::decodeWithVerification(
-        cleanedHex, keys.empty() ? nullptr : &keyStore
-    );
+static int decodeAndPrint(const std::string& cleanedHex, const MeshCoreKeyStore* keyStore,
+                          bool jsonOutput, bool showStructure, bool compactJson) {
+    auto packet = MeshCorePacketDecoder::decodeWithVerification(cleanedHex, keyStore);
 
     if (jsonOutput) {
         json j = payloadToJson(packet);
         if (showStructure) {
             auto structure = MeshCorePacketDecoder::analyzeStructureWithVerification(
-                cleanedHex, keys.empty() ? nullptr : &keyStore
+                cleanedHex, keyStore
             );
             // Add structure to JSON output
             json sj;
@@ -265,7 +307,7 @@ static int cmdDecode(const std::string& hex, const std::vector<std::string>& key
             sj["messageHash"] = structure.messageHash;
             j["structure"] = sj;
         }
-        std::cout << j.dump(2) << "\n";
+        std::cout << (compactJson ? j.dump() : j.dump(2)) << "\n";
     } else {
         std::cout << color::cyan << "=== MeshCore Packet Analysis ===" << color::reset << "\n\n";
 
@@ -301,7 +343,7 @@ static int cmdDecode(const std::string& hex, const std::vector<std::string>& key
 
         if (showStructure) {
             auto structure = MeshCorePacketDecoder::analyzeStructureWithVerification(
-                cleanedHex, keys.empty() ? nullptr : &keyStore
+                cleanedHex, keyStore
             );
 
             std::cout << color::cyan << "\n=== Packet Structure ===" << color::reset << "\n";
@@ -331,6 +373,61 @@ static int cmdDecode(const std::string& hex, const std::vector<std::string>& key
         if (!packet.isValid) return 1;
     }
 
+    return 0;
+}
+
+static int cmdDecode(const std::string& hex, const std::vector<std::string>& keys,
+                     bool jsonOutput, bool showStructure) {
+    MeshCoreKeyStore keyStore;
+    if (!keys.empty()) {
+        keyStore.addChannelSecrets(keys);
+    }
+    return decodeAndPrint(cleanHex(hex), keys.empty() ? nullptr : &keyStore,
+                          jsonOutput, showStructure, false);
+}
+
+// Stream mode: persistent filter for piping a receiver's output straight in,
+// e.g.  lora_rx | meshcore-decoder stream -K keys.txt
+// Decodes "rx ok: <hex>", "rx hex: <hex>" and bare-hex lines; with --rx-msg
+// also "rx msg: 0x11, 0x04, ..." lines (for replaying old logs). All other
+// lines pass through untouched so context (channel, SNR, CRC) stays visible.
+static int cmdStream(const std::vector<std::string>& keys, bool jsonOutput,
+                     bool showStructure, bool decodeRxMsg, bool quiet) {
+    MeshCoreKeyStore keyStore;
+    if (!keys.empty()) {
+        keyStore.addChannelSecrets(keys);
+    }
+    const MeshCoreKeyStore* ks = keys.empty() ? nullptr : &keyStore;
+
+    std::string line;
+    size_t decoded = 0;
+    while (std::getline(std::cin, line)) {
+        std::string t = trim(line);
+        std::string hex;
+        if (t.rfind("rx ok: ", 0) == 0) hex = trim(t.substr(7));
+        else if (t.rfind("rx hex: ", 0) == 0) hex = trim(t.substr(8));
+        else if (decodeRxMsg && t.rfind("rx msg:", 0) == 0) hex = hexFromRxMsg(t);
+        else if (isBareHex(t)) hex = t;
+
+        if (hex.empty() || !isBareHex(hex)) {
+            if (!quiet) {
+                std::cout << line << "\n";
+                std::cout.flush();
+            }
+            continue;
+        }
+
+        // A bad packet must not kill the stream
+        try {
+            decodeAndPrint(hex, ks, jsonOutput, showStructure, true);
+        } catch (const std::exception& e) {
+            std::cerr << color::red << "decode error: " << e.what()
+                      << color::reset << "\n";
+        }
+        decoded++;
+        std::cout.flush();
+    }
+    std::cerr << "stream ended, " << decoded << " packet(s) decoded\n";
     return 0;
 }
 
@@ -398,13 +495,21 @@ static void printUsage(const char* progName) {
     std::cout << "Usage:\n";
     std::cout << "  " << progName << " decode <hex> [options]\n";
     std::cout << "  " << progName << " <hex> [options]           (decode is default)\n";
+    std::cout << "  " << progName << " stream [options]          (decode packets from stdin, line by line)\n";
     std::cout << "  " << progName << " derive-key <private-key> [options]\n";
     std::cout << "  " << progName << " auth-token <public-key> <private-key> [options]\n";
     std::cout << "  " << progName << " verify-token <token> [options]\n\n";
     std::cout << "Decode Options:\n";
     std::cout << "  -k, --key <key>     Channel secret key for decryption (can be repeated)\n";
+    std::cout << "  -K, --key-file <f>  Read channel keys from file (one hex key per line, # comments)\n";
     std::cout << "  -j, --json          Output as JSON\n";
     std::cout << "  -s, --structure     Show detailed packet structure\n\n";
+    std::cout << "Stream Options (in addition to decode options; -j prints one JSON per line):\n";
+    std::cout << "  -a, --rx-msg        Also decode legacy \"rx msg: 0x..\" lines (old logs)\n";
+    std::cout << "  -q, --quiet         Do not pass non-packet input lines through\n";
+    std::cout << "  Decodes \"rx ok: <hex>\", \"rx hex: <hex>\" and bare-hex lines from stdin;\n";
+    std::cout << "  everything else passes through. Example:\n";
+    std::cout << "    lora_rx -C 869432000,869618000 -S 7,8 | " << progName << " stream -K keys.txt\n\n";
     std::cout << "Derive-key Options:\n";
     std::cout << "  -v, --validate <key>  Validate against expected public key\n";
     std::cout << "  -j, --json            Output as JSON\n\n";
@@ -435,7 +540,7 @@ int main(int argc, char* argv[]) {
 
     // Determine command
     bool isDecodeDefault = false;
-    if (command != "decode" && command != "derive-key" &&
+    if (command != "decode" && command != "stream" && command != "derive-key" &&
         command != "auth-token" && command != "verify-token" &&
         command != "--help" && command != "-h") {
         // Default command is decode
@@ -470,10 +575,35 @@ int main(int argc, char* argv[]) {
                 showStructure = true;
             } else if ((arg == "-k" || arg == "--key") && i + 1 < argc) {
                 keys.push_back(argv[++i]);
+            } else if ((arg == "-K" || arg == "--key-file") && i + 1 < argc) {
+                if (!loadKeyFile(argv[++i], keys)) return 1;
             }
         }
 
         return cmdDecode(hexArg, keys, jsonOutput, showStructure);
+    }
+
+    if (command == "stream") {
+        bool decodeRxMsg = false;
+        bool quiet = false;
+        for (int i = 2; i < argc; i++) {
+            std::string arg = argv[i];
+            if (arg == "-j" || arg == "--json") {
+                jsonOutput = true;
+            } else if (arg == "-s" || arg == "--structure") {
+                showStructure = true;
+            } else if (arg == "-a" || arg == "--rx-msg") {
+                decodeRxMsg = true;
+            } else if (arg == "-q" || arg == "--quiet") {
+                quiet = true;
+            } else if ((arg == "-k" || arg == "--key") && i + 1 < argc) {
+                keys.push_back(argv[++i]);
+            } else if ((arg == "-K" || arg == "--key-file") && i + 1 < argc) {
+                if (!loadKeyFile(argv[++i], keys)) return 1;
+            }
+        }
+
+        return cmdStream(keys, jsonOutput, showStructure, decodeRxMsg, quiet);
     }
 
     if (command == "derive-key") {
