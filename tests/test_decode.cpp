@@ -59,3 +59,35 @@ TEST(PacketDecoder, CreateKeyStore) {
     EXPECT_TRUE(keyStore.hasChannelKey("11"));
     EXPECT_FALSE(keyStore.hasChannelKey("22"));
 }
+
+TEST(PacketDecoder, DecodeMultiBytePathHashes) {
+    // path_len byte encodes hash size in bits 6-7 (Packet.h upstream):
+    // 0x42 = 2 hops x 2-byte hashes. Payload is a minimal Path payload
+    // (0 hops, extraType 0xFF).
+    std::string hexData = "2142AABBCCDD00FF";
+
+    auto packet = MeshCorePacketDecoder::decode(hexData);
+
+    EXPECT_TRUE(packet.isValid);
+    EXPECT_EQ(packet.routeType, RouteType::Flood);
+    EXPECT_EQ(packet.payloadType, PayloadType::Path);
+    EXPECT_EQ(packet.pathLength, 2);
+    ASSERT_TRUE(packet.path.has_value());
+    ASSERT_EQ(packet.path->size(), 2u);
+    EXPECT_EQ((*packet.path)[0], "AABB");
+    EXPECT_EQ((*packet.path)[1], "CCDD");
+}
+
+TEST(PacketDecoder, DecodeSingleBytePathHashesUnchanged) {
+    // Legacy 1-byte hashes: path_len byte < 64 is a plain hop count
+    std::string hexData = "2102AABB00FF";
+
+    auto packet = MeshCorePacketDecoder::decode(hexData);
+
+    EXPECT_TRUE(packet.isValid);
+    EXPECT_EQ(packet.pathLength, 2);
+    ASSERT_TRUE(packet.path.has_value());
+    ASSERT_EQ(packet.path->size(), 2u);
+    EXPECT_EQ((*packet.path)[0], "AA");
+    EXPECT_EQ((*packet.path)[1], "BB");
+}
