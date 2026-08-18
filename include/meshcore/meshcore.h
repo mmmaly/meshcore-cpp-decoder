@@ -11,6 +11,7 @@
 #include "crypto/key_manager.h"
 #include "crypto/channel_crypto.h"
 #include "crypto/ed25519.h"
+#include "crypto/peer_crypto.h"
 #include "utils/hex.h"
 #include "utils/enum_names.h"
 #include "utils/auth_token.h"
