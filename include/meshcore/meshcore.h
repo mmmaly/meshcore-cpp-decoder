@@ -15,3 +15,4 @@
 #include "utils/enum_names.h"
 #include "utils/auth_token.h"
 #include "utils/base64.h"
+#include "encoder/packet_encoder.h"

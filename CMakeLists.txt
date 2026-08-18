@@ -36,6 +36,7 @@ set(LIB_SOURCES
   src/decoder/payload_decoders/path.cpp
   src/decoder/payload_decoders/control.cpp
   src/decoder/packet_decoder.cpp
+  src/encoder/packet_encoder.cpp
   src/utils/auth_token.cpp
   src/utils/base64.cpp
 )
@@ -78,6 +79,7 @@ if(BUILD_TESTS)
     tests/test_trace.cpp
     tests/test_advert.cpp
     tests/test_crypto.cpp
+    tests/test_encoder.cpp
   )
   target_link_libraries(meshcore_tests PRIVATE meshcore_decoder GTest::gtest_main)
   include(GoogleTest)
