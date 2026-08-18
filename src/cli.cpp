@@ -100,6 +100,7 @@ static json payloadToJson(const DecodedPacket& packet) {
     j["pathLength"] = packet.pathLength;
     j["totalBytes"] = packet.totalBytes;
     j["isValid"] = packet.isValid;
+    j["verified"] = packet.isValid && packet.payloadDecoded.has_value();
 
     if (packet.transportCodes.has_value()) {
         j["transportCodes"] = {packet.transportCodes->first, packet.transportCodes->second};
@@ -316,6 +317,13 @@ static int decodeAndPrint(const std::string& cleanedHex, const MeshCoreKeyStore*
             for (const auto& err : packet.errors) {
                 std::cout << color::red << "   " << err << color::reset << "\n";
             }
+        } else if (!packet.payloadDecoded.has_value()) {
+            // The envelope sliced cleanly but the payload carries nothing to
+            // authenticate (unknown or opaque type) - random bytes pass this
+            // bar most of the time, so do NOT call it valid.
+            std::cout << color::yellow << "UNVERIFIED Packet" << color::reset
+                      << color::dim << " (envelope parse only - payload not authenticated)"
+                      << color::reset << "\n";
         } else {
             std::cout << color::green << "Valid Packet" << color::reset << "\n";
         }
