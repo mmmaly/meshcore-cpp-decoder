@@ -63,6 +63,70 @@ EncodeResult MeshCorePacketEncoder::buildPacket(
     return result;
 }
 
+EncodeResult MeshCorePacketEncoder::buildGroupPayload(
+    const std::string& channelKeyHex, const std::vector<uint8_t>& plainIn
+) {
+    EncodeResult result;
+    try {
+        auto channelKey16 = hexToBytes(channelKeyHex);
+        if (channelKey16.size() != 16) {
+            result.error = "channel key must be 16 bytes";
+            return result;
+        }
+        std::vector<uint8_t> plain = plainIn;
+        while (plain.size() % 16 != 0) plain.push_back(0);
+
+        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) { result.error = "failed to create cipher context"; return result; }
+        EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, channelKey16.data(), nullptr);
+        EVP_CIPHER_CTX_set_padding(ctx, 0);
+        std::vector<uint8_t> cipher(plain.size() + 16);
+        int outLen = 0, totalLen = 0;
+        EVP_EncryptUpdate(ctx, cipher.data(), &outLen, plain.data(), (int)plain.size());
+        totalLen = outLen;
+        EVP_EncryptFinal_ex(ctx, cipher.data() + totalLen, &outLen);
+        totalLen += outLen;
+        EVP_CIPHER_CTX_free(ctx);
+        cipher.resize(totalLen);
+
+        std::vector<uint8_t> channelSecret(32, 0);
+        std::copy(channelKey16.begin(), channelKey16.end(), channelSecret.begin());
+        unsigned int hmacLen = 0;
+        uint8_t mac[EVP_MAX_MD_SIZE];
+        HMAC(EVP_sha256(), channelSecret.data(), (int)channelSecret.size(),
+             cipher.data(), cipher.size(), mac, &hmacLen);
+
+        auto hashByte = hexToBytes(ChannelCrypto::calculateChannelHash(channelKeyHex));
+        result.bytes.reserve(3 + cipher.size());
+        result.bytes.push_back(hashByte[0]);
+        result.bytes.push_back(mac[0]);
+        result.bytes.push_back(mac[1]);
+        result.bytes.insert(result.bytes.end(), cipher.begin(), cipher.end());
+        result.success = true;
+    } catch (const std::exception& ex) {
+        result.error = ex.what();
+    }
+    return result;
+}
+
+EncodeResult MeshCorePacketEncoder::buildGroupDataPayload(
+    const std::string& channelKeyHex, uint16_t dataType,
+    const std::vector<uint8_t>& data
+) {
+    if (data.size() > 255) {
+        EncodeResult r;
+        r.error = "group data payload is limited to 255 bytes";
+        return r;
+    }
+    std::vector<uint8_t> plain;
+    plain.reserve(3 + data.size());
+    plain.push_back(dataType & 0xFF);
+    plain.push_back((dataType >> 8) & 0xFF);
+    plain.push_back((uint8_t)data.size());
+    plain.insert(plain.end(), data.begin(), data.end());
+    return buildGroupPayload(channelKeyHex, plain);
+}
+
 EncodeResult MeshCorePacketEncoder::buildGroupTextPayload(
     const std::string& channelKeyHex,
     const std::string& sender,

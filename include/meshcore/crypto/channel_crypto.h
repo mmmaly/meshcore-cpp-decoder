@@ -5,6 +5,7 @@
 
 #include <string>
 #include <optional>
+#include <vector>
 #include <cstdint>
 
 namespace meshcore {
@@ -27,6 +28,13 @@ public:
     );
 
     static std::string calculateChannelHash(const std::string& secretKeyHex);
+
+    // MAC-then-decrypt with a channel key, returning the raw plaintext
+    // (GroupData and any future group payload need the bytes, not the
+    // GroupText field parse).
+    static std::optional<std::vector<uint8_t>> decryptRaw(
+        const std::string& ciphertextHex, const std::string& cipherMacHex,
+        const std::string& channelKeyHex);
 };
 
 } // namespace meshcore

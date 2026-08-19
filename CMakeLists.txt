@@ -23,6 +23,7 @@ set(LIB_SOURCES
   src/utils/enum_names.cpp
   src/types/enums.cpp
   src/crypto/channel_crypto.cpp
+  src/crypto/peer_crypto.cpp
   src/crypto/ed25519.cpp
   src/crypto/key_manager.cpp
   src/decoder/payload_decoders/advert.cpp
@@ -80,6 +81,7 @@ if(BUILD_TESTS)
     tests/test_advert.cpp
     tests/test_crypto.cpp
     tests/test_encoder.cpp
+    tests/test_peer_crypto.cpp
   )
   target_link_libraries(meshcore_tests PRIVATE meshcore_decoder GTest::gtest_main)
   include(GoogleTest)

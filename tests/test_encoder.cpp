@@ -107,3 +107,32 @@ TEST(Encoder, TransportCodesRoundTrip) {
     EXPECT_EQ(decoded.transportCodes->first, 0x1234);
     EXPECT_EQ(decoded.transportCodes->second, 0xabcd);
 }
+
+TEST(Encoder, GroupDataRoundTrip) {
+    std::vector<uint8_t> blob = {0xde, 0xad, 0xbe, 0xef, 0x01, 0x02};
+    auto payload = MeshCorePacketEncoder::buildGroupDataPayload(kKey, 0xAE1C, blob);
+    ASSERT_TRUE(payload.success) << payload.error;
+
+    auto pkt = MeshCorePacketEncoder::buildPacket(
+        RouteType::Flood, PayloadType::GroupData, payload.bytes);
+    ASSERT_TRUE(pkt.success);
+    auto decoded = MeshCorePacketDecoder::decode(bytesToHex(pkt.bytes));
+    EXPECT_EQ(decoded.payloadType, PayloadType::GroupData);
+
+    // channel_hash(1) + mac(2) + ciphertext
+    auto raw = hexToBytes(decoded.payloadRaw);
+    ASSERT_GT(raw.size(), 3u);
+    auto plain = ChannelCrypto::decryptRaw(bytesToHex(raw.data() + 3, raw.size() - 3),
+                                           bytesToHex(raw.data() + 1, 2), kKey);
+    ASSERT_TRUE(plain.has_value());
+    ASSERT_GE(plain->size(), 3u + blob.size());
+    uint16_t dataType = (*plain)[0] | ((uint16_t)(*plain)[1] << 8);
+    EXPECT_EQ(dataType, 0xAE1C);
+    EXPECT_EQ((*plain)[2], blob.size());
+    EXPECT_TRUE(std::equal(blob.begin(), blob.end(), plain->begin() + 3));
+
+    // wrong key must fail the MAC
+    EXPECT_FALSE(ChannelCrypto::decryptRaw(bytesToHex(raw.data() + 3, raw.size() - 3),
+                                           bytesToHex(raw.data() + 1, 2),
+                                           "00112233445566778899aabbccddeeff").has_value());
+}

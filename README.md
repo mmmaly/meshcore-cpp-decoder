@@ -8,6 +8,10 @@ C++ implementation of the MeshCore mesh networking packet decoder. Designed to r
 - GroupText message decryption (AES-128 ECB + HMAC-SHA256)
 - Ed25519 signature verification for advertisements
 - Ed25519 key derivation and JWT-style auth tokens
+- **Packet encoding**: build the packets a node transmits - encrypted
+  GroupText and GroupData, signed adverts, and raw packet assembly
+- **Direct-message crypto**: X25519 shared secrets between MeshCore
+  identities, the encrypt-then-MAC peer cipher, and delivery-ACK hashes
 - Detailed packet structure analysis
 - JSON output mode
 - Static library for embedding in other projects
@@ -18,10 +22,11 @@ C++ implementation of the MeshCore mesh networking packet decoder. Designed to r
 |------|------|--------|
 | 0x00 | Request | Decode |
 | 0x01 | Response | Decode |
-| 0x02 | TextMessage | Decode |
+| 0x02 | TextMessage | Decode + Decrypt/Encrypt (ECDH) |
 | 0x03 | Ack | Decode |
-| 0x04 | Advert | Decode + Signature Verification |
-| 0x05 | GroupText | Decode + Decryption |
+| 0x04 | Advert | Decode + Signature Verification + Build/Sign |
+| 0x05 | GroupText | Decode + Decryption + Encryption |
+| 0x06 | GroupData | Encrypt/Decrypt (blob transport) |
 | 0x07 | AnonRequest | Decode |
 | 0x08 | Path | Decode |
 | 0x09 | Trace | Decode |
@@ -130,6 +135,44 @@ cat pakety.txt | ./meshcore-decoder stream --rx-msg -K keys.txt
 ```bash
 ./meshcore-decoder verify-token <token>
 ```
+
+## Encoding (writing packets, not just reading them)
+
+`MeshCorePacketEncoder` is the inverse of the decoder, so a node built on
+this library can transmit as well as listen:
+
+```cpp
+#include "meshcore/encoder/packet_encoder.h"
+#include "meshcore/crypto/peer_crypto.h"
+
+// A channel message
+auto payload = MeshCorePacketEncoder::buildGroupTextPayload(
+    channelKeyHex, "MyNode", "ahoj", timestamp);
+auto pkt = MeshCorePacketEncoder::buildPacket(
+    RouteType::Flood, PayloadType::GroupText, payload.bytes);
+
+// A signed advert
+auto adv = MeshCorePacketEncoder::buildAdvertPayload(
+    privateKeyHex, publicKeyHex, timestamp, "MyNode", DeviceRole::ChatNode);
+
+// A direct message: ECDH secret, then the TXT_MSG payload
+auto secret = PeerCrypto::keyExchange(myPrivateKeyHex, theirPublicKeyHex);
+auto dm = PeerCrypto::buildTextMessagePayload(
+    secret, theirPubKey[0], myPubKey[0], timestamp, attempt, "text");
+uint32_t expectedAck = PeerCrypto::calcAckHash(
+    timestamp, attempt, "text", myPublicKeyHex);
+```
+
+`PeerCrypto::keyExchange` reproduces the firmware's orlp
+`ed25519_key_exchange` with OpenSSL primitives (the Edwards public key
+mapped to its Montgomery u-coordinate, X25519 with the clamped
+SHA512-of-seed scalar). It is validated in the test suite against the
+reference keypair the MeshCore firmware ships in `Identity.cpp`, so the
+secrets it derives match what real nodes compute.
+
+Every builder is tested by round-tripping its output back through this
+library's decoder - decryption, signature verification and all - so the
+two directions cannot drift apart.
 
 ## Running Tests
 
