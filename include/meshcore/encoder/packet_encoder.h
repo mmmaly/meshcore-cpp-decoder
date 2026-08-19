@@ -37,6 +37,17 @@ public:
         PayloadVersion version = PayloadVersion::Version1
     );
 
+    // Generic group payload: channel_hash(1) + cipher_mac(2) + ciphertext of
+    // an arbitrary plaintext. GroupText and GroupData differ only in what
+    // that plaintext holds, so both build on this.
+    static EncodeResult buildGroupPayload(const std::string& channelKeyHex,
+                                          const std::vector<uint8_t>& plain);
+
+    // GroupData payload: plaintext is data_type(2 LE) + data_len(1) + data.
+    static EncodeResult buildGroupDataPayload(const std::string& channelKeyHex,
+                                              uint16_t dataType,
+                                              const std::vector<uint8_t>& data);
+
     // GroupText payload: channel_hash(1) + cipher_mac(2) + ciphertext.
     // Plaintext is timestamp(4 LE) + flags(1) + "sender: message", zero-padded
     // to the AES block, encrypted AES-128-ECB with the 16-byte channel key;

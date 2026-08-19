@@ -105,6 +105,45 @@ DecryptionResult ChannelCrypto::decryptGroupTextMessage(
     return result;
 }
 
+std::optional<std::vector<uint8_t>> ChannelCrypto::decryptRaw(
+    const std::string& ciphertextHex, const std::string& cipherMacHex,
+    const std::string& channelKeyHex
+) {
+    try {
+        auto channelKey16 = hexToBytes(channelKeyHex);
+        auto macBytes = hexToBytes(cipherMacHex);
+        auto cipher = hexToBytes(ciphertextHex);
+        if (channelKey16.size() != 16 || macBytes.size() < 2 || cipher.empty())
+            return std::nullopt;
+
+        std::vector<uint8_t> channelSecret(32, 0);
+        std::copy(channelKey16.begin(), channelKey16.end(), channelSecret.begin());
+
+        unsigned int hmacLen = 0;
+        uint8_t hmacResult[EVP_MAX_MD_SIZE];
+        HMAC(EVP_sha256(), channelSecret.data(), (int)channelSecret.size(),
+             cipher.data(), cipher.size(), hmacResult, &hmacLen);
+        if (hmacResult[0] != macBytes[0] || hmacResult[1] != macBytes[1])
+            return std::nullopt;
+
+        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) return std::nullopt;
+        EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), nullptr, channelKey16.data(), nullptr);
+        EVP_CIPHER_CTX_set_padding(ctx, 0);
+        std::vector<uint8_t> plain(cipher.size() + 16);
+        int outLen = 0, total = 0;
+        EVP_DecryptUpdate(ctx, plain.data(), &outLen, cipher.data(), (int)cipher.size());
+        total = outLen;
+        EVP_DecryptFinal_ex(ctx, plain.data() + total, &outLen);
+        total += outLen;
+        EVP_CIPHER_CTX_free(ctx);
+        plain.resize(total);
+        return plain;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 std::string ChannelCrypto::calculateChannelHash(const std::string& secretKeyHex) {
     auto secretBytes = hexToBytes(secretKeyHex);
 
